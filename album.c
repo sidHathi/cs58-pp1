@@ -10,7 +10,6 @@ main(const int argc, const char** argv)
     
     int pid = fork();
     if (pid == 0) {
-        char *args[]={"./EXEC",NULL};
-        execv("./convert", args);
+        execv("./convert", argv);
     }
 }
