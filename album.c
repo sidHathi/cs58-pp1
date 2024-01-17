@@ -1,3 +1,18 @@
+/* 
+ * album.c - CS58 Programming Project 1
+ * 
+ * The 'crawler' module defines an executable program that 
+ * concurently converts input images into thumbnails,
+ * and provides a command line UI to the user to determine
+ * what further edits to make. After it executes, it leaves
+ * behind an index.html file with links to the results
+ * 
+ * Takes in the names of the images as parameters
+ *
+ * Siddharth Hathi, January 2024
+ */
+
+#define _POSIX_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -8,9 +23,11 @@
 #include <sys/wait.h>
 #include <errno.h>
 
+/**************** file-local global variables ****************/
 #define STRING_LEN 100
 #define MAX_FILES_IN_DIR 1024
 
+/**************** global types ****************/
 typedef struct EditedImage {
   char* originalImagePath;
   char* thumbnailPath;
@@ -18,6 +35,7 @@ typedef struct EditedImage {
   char* caption;
 } edited_image_t;
 
+/**************** function prototypes ****************/
 static bool parse_args(const int argc, const char** argv, char** dirnames);
 static void get_photo_refs(char** dirNames, int numDirs, int* numPhotos, char** photoPaths);
 static void process_thumbnails(int numPhotos, char** photoNames, int* tnPipe, int* sizePipe);
@@ -25,12 +43,13 @@ static void pipeline_images(int numPhotos, char** photoNames, int* tnPipe, int* 
 static char* insert_path_suffix(char* originalPath, char* suffix);
 static void gen_thumbnail(char* imagePath, char* destPath);
 static void gen_final_image(char* srcImagePath, char* destPath);
-static void display_image(char* imagePath);
+static int display_image(char* imagePath);
 static void rotate_image(char* imagePath, char* destPath, int degrees);
 static edited_image_t* edited_image_new(char* imagePath, char* tnPath, char* finalImagePath, char* caption);
-static void editted_image_free(edited_image_t* ei);
+static void edited_image_free(edited_image_t* ei);
 static void gen_html(edited_image_t** editedImages, int numImages);
 
+/* ***************** main ********************** */
 int
 main(const int argc, const char** argv)
 {
@@ -60,10 +79,26 @@ main(const int argc, const char** argv)
     for (int i = 0; i < argc - 1; i ++ ) {
       free(dirnames[i]);
     }
+    free(photoPaths);
 
     return 0;
 }
 
+/**************** parse_args ****************/
+/* Parses command line arguments and updates dependent
+ * variables.
+ *
+ * Caller provides:
+ *   copy of argc, argv provided to main()
+ *   *pointers* to seedURL, pageDirectory, and maxDepth
+ *   variables that should be updated based on arguments
+ * We guarantee:
+ *   Program exits if argument parsing unnsuccessful -
+ *   in this case function does not return and error message
+ *   written to stderr
+ *   Otherwise, seedURL, pageDirectory, and maxDepth will
+ *   be updated based on argc, argv contents.
+ */
 bool
 parse_args(const int argc, const char** argv, char** dirnames)
 {
@@ -77,6 +112,19 @@ parse_args(const int argc, const char** argv, char** dirnames)
     return true;
 }
 
+/**************** get_photo_refs ****************/
+/* Gets all the filepaths in the current directory matching
+ * one of a list of regex expressions
+ *
+ * Caller provides:
+ *   list of regex filenames
+ *   the number of files
+ *   an empty integer pointer
+ *   an empty array of strings
+ * We guarantee:
+ *   the integer pointer will be populated with the number of matching files
+ *   the array will be populated with the names of all match files
+ */
 void
 get_photo_refs(char** dirNames, int numDirs, int* numPhotos, char** photoPaths)
 {
@@ -92,13 +140,11 @@ get_photo_refs(char** dirNames, int numDirs, int* numPhotos, char** photoPaths)
         // FREE LATER
         photoPaths[photosAdded] = malloc(sizeof(char)*strlen(glob_result.gl_pathv[i]));
         strcpy(photoPaths[photosAdded], glob_result.gl_pathv[i]);
-        printf("photo found with path %s\n", photoPaths[photosAdded]);
         photosAdded ++;
       }
 
       globfree(&glob_result);
     }
-    printf("%d photos found for regex\n", *numPhotos);
 }
 
 
@@ -139,6 +185,22 @@ int input_string(char *message, char *buffer, int len) {
   return rc;
 }
 
+/**************** process_thumbnails ****************/
+/* Forks a process to create each thumbnail and pipes
+ * the names of the completed thumbnails through provided
+ * pipe
+ *
+ * Caller provides:
+ *   number of photos
+ *   array of photo names
+ *   pipe through which to send the thumbnails
+ *   pipe through which to send the size of each thumbnail filename string
+ * We guarantee:
+ *   the forked process will execute the convert shell program for each of
+ *   the photos, and the results will be piped through the input pipes;
+ *   we also guarantee that the function will wait until the forked process
+ *   terminates
+ */
 void
 process_thumbnails(int numPhotos, char** photoNames, int* tnPipe, int* sizePipe)
 {
@@ -149,9 +211,7 @@ process_thumbnails(int numPhotos, char** photoNames, int* tnPipe, int* sizePipe)
       cpid = fork();
       if (cpid == 0) {
         char* photoName = photoNames[i];
-        printf("photo name: %s\n", photoName);
         char* photoTnName = insert_path_suffix(photoName, "tn");
-        printf("forked - creating thumbnail %s\n", photoTnName);
         gen_thumbnail(photoName, photoTnName);
         exit(0);
       }
@@ -170,6 +230,20 @@ process_thumbnails(int numPhotos, char** photoNames, int* tnPipe, int* sizePipe)
   waitpid(pid, &exitStatus, 0);
 }
 
+/**************** pipeline_images ****************/
+/* Forks a process to get user input for each image and
+ * create the final processed image depending on that input
+ *
+ * Caller provides:
+ *   number of photos
+ *   array of photo names
+ *   pipe through which to read the name of completed thumbnails
+ *   pipe through which to read the size of each thumbnail filename string
+ * We guarantee:
+ *   the forked process will ask for input and modify an image only
+ *   after the thumbnail pipeline has converted it first; the function
+ *   will only terminate after the forked process has exited
+ */
 void
 pipeline_images(int numPhotos, char** photoNames, int* tnPipe, int* sizePipe)
 {
@@ -186,11 +260,8 @@ pipeline_images(int numPhotos, char** photoNames, int* tnPipe, int* sizePipe)
         // handle the new string here
         // this includes -> figuring out the file it corresponds to
         // displaying the thumbnail to the use in a forked process
-        printf("current photo path: %s\n", currPhotoName);
         char* photoTnName = insert_path_suffix(currPhotoName, "tn");
-        printf("thumbnail path: %s\n", photoTnName);
-        // enable once x11 forwarding is figured out
-        // display_image(photoTnName);
+        int dispPid = display_image(photoTnName);
 
         // asking the user if they want to flip the thumbnail or not
         bool rotated = false;
@@ -221,6 +292,7 @@ pipeline_images(int numPhotos, char** photoNames, int* tnPipe, int* sizePipe)
         free(photoTnName);
         free(rotationPath);
         free(finalImagePath);
+        kill(dispPid, 9);
         currPhotoIndex ++;
       }
     }
@@ -236,12 +308,19 @@ pipeline_images(int numPhotos, char** photoNames, int* tnPipe, int* sizePipe)
     }
     exit(0);
   }
-  printf("forked with pid %d\n", pid);
   int exitStatus;
   waitpid(pid, &exitStatus, 0);
 }
 
-void
+/**************** display_image ****************/
+/* Forks and displays the specified image
+ *
+ * Caller provides:
+ *   path of the image
+ * Function returns:
+ *   pid of display process
+ */
+int
 display_image(char* imagePath)
 {
   int pid = fork();
@@ -254,8 +333,17 @@ display_image(char* imagePath)
     }
     exit(0);
   }
+  return pid;
 }
 
+/**************** rotate_image ****************/
+/* Forks and rotates the specified image
+ *
+ * Caller provides:
+ *   path of the image
+ *   path of rotated image
+ *   degrees of rotation
+ */
 void
 rotate_image(char* imagePath, char* destPath, int degrees)
 {
@@ -263,7 +351,6 @@ rotate_image(char* imagePath, char* destPath, int degrees)
   if (pid == 0) {
     char* programPath = "convert";
     char degreeString[STRING_LEN];
-    sprintf(degreeString, "%d", degrees);
     char* args[] = { "convert", "-rotate", degreeString, imagePath, destPath, NULL };
     if (execvp(programPath, args) == -1) {
       perror("Error executing command");
@@ -271,13 +358,18 @@ rotate_image(char* imagePath, char* destPath, int degrees)
     }
     exit(0);
   }
-  printf("forked with pid %d\n", pid);
   int exitStatus;
   waitpid(pid, &exitStatus, 0);
-  int return_status = WEXITSTATUS(exitStatus);
-  printf("exited pid %d with status %d\n", pid, return_status);
+  // int return_status = WEXITSTATUS(exitStatus);
 }
 
+/**************** rotate_image ****************/
+/* Forks and compresses the specified image into a thumbnail
+ *
+ * Caller provides:
+ *   path of the image
+ *   path of the result
+ */
 void
 gen_thumbnail(char* imagePath, char* destPath)
 {
@@ -285,20 +377,23 @@ gen_thumbnail(char* imagePath, char* destPath)
   if (pid == 0) {
     char* programPath = "convert";
     char* args[] = { "convert", "-resize", "10%", imagePath, destPath, NULL };
-    printf("generating thumbnail\n");
     if (execvp(programPath, args) == -1) {
       perror("Error executing command");
       exit(-1);
     }
     exit(0);
   }
-  printf("forked with pid %d\n", pid);
   int exitStatus;
   waitpid(pid, &exitStatus, 0);
-  int return_status = WEXITSTATUS(exitStatus);
-  printf("exited pid %d with status %d\n", pid, return_status);
 }
 
+/**************** gen_final_image ****************/
+/* Forks and compresses the specified image into a 25% copy
+ *
+ * Caller provides:
+ *   path of the image
+ *   path of the result
+ */
 void
 gen_final_image(char* srcImagePath, char* destPath)
 {
@@ -313,13 +408,20 @@ gen_final_image(char* srcImagePath, char* destPath)
     exit(0);
   }
 
-  printf("forked with pid %d\n", pid);
   int exitStatus;
   waitpid(pid, &exitStatus, 0);
-  int return_status = WEXITSTATUS(exitStatus);
-  printf("exited pid %d with status %d\n", pid, return_status);
 }
 
+/**************** insert_path_suffix ****************/
+/* Inserts a suffix into a filename. For filename sample.txt
+ * and suffix o, the output would be sample_o.txt
+ *
+ * Caller provides:
+ *   original filename
+ *   suffix to be inserted
+ * Returns:
+ *  original filename with suffix inserted
+ */
 char*
 insert_path_suffix(char* originalPath, char* suffix)
 {
@@ -344,6 +446,9 @@ insert_path_suffix(char* originalPath, char* suffix)
   return newPath;
 }
 
+/**************** edited_image_new ****************/
+/* Allocates and creates an edited image struct
+ */
 edited_image_t*
 edited_image_new(char* imagePath, char* tnPath, char* finalImagePath, char* caption)
 {
@@ -359,8 +464,11 @@ edited_image_new(char* imagePath, char* tnPath, char* finalImagePath, char* capt
   return ei;
 }
 
+/**************** edited_image_free ****************/
+/* Frees edited image struct
+ */
 void
-editted_image_free(edited_image_t* ei)
+edited_image_free(edited_image_t* ei)
 {
   free(ei->originalImagePath);
   free(ei->thumbnailPath);
@@ -369,6 +477,13 @@ editted_image_free(edited_image_t* ei)
   free(ei);
 }
 
+/**************** gen_html ****************/
+/* Generates an html file for a list of edited images
+ *
+ * Caller provides:
+ *   listed of edited_image structs
+ *   length of the list
+ */
 void
 gen_html(edited_image_t** editedImages, int numImages)
 {
@@ -382,12 +497,12 @@ gen_html(edited_image_t** editedImages, int numImages)
     return;
   }
 
-  fprintf(htmlFile, "<body>\n");
+  fprintf(htmlFile, "<html>\n<body>\n");
   for ( int i = 0; i < numImages; i ++ ) {
     edited_image_t* ei = editedImages[i];
     fprintf(htmlFile, "<a href='%s'><img src='%s' /><p>%s</p></a>\n", ei->finalImagePath, ei->thumbnailPath, ei->caption);
   }
-  fprintf(htmlFile, "</body>\n");
+  fprintf(htmlFile, "</body>\n</html>");
 
   fclose(htmlFile);
 }

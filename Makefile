@@ -1,21 +1,13 @@
 .SUFFIXES: .c
 
-
-SRCS = convert.c album.c
+SRCS = album.c
 OBJS = $(SRCS:.c=.o)
-OUTPUT = convert album
+OUTPUT = album
 
-CC = gcc
-CFLAGS = 
-LIBS = 
-
-all: convert album
-
-convert: convert.c
-	gcc -o convert convert.c
+all: album
 
 album: album.c
-	gcc -o album album.c
+	gcc -std=c99 -Wall -g -o album album.c
 
 clean:
 	rm -f $(OBJS) $(OUTPUT)
