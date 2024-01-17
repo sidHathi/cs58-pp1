@@ -1,7 +1,7 @@
 /* 
  * album.c - CS58 Programming Project 1
  * 
- * The 'crawler' module defines an executable program that 
+ * The 'album' module defines an executable program that 
  * concurently converts input images into thumbnails,
  * and provides a command line UI to the user to determine
  * what further edits to make. After it executes, it leaves
